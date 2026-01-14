@@ -5,7 +5,85 @@ This script works without OpenAI API - just pure Playwright automation
 """
 
 import asyncio
+import subprocess
+import sys
+import time
+import socket
+import os
+import signal
 from playwright.async_api import async_playwright
+
+# Global variable to track server process
+_server_process = None
+
+
+def is_port_in_use(port: int = 5000) -> bool:
+    """Check if a port is already in use"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.connect(('localhost', port))
+            return True
+        except (ConnectionRefusedError, OSError):
+            return False
+
+
+def start_flask_server():
+    """Start the Flask server if not already running"""
+    global _server_process
+    
+    if is_port_in_use(5000):
+        print("✅ Flask server already running on port 5000")
+        return True
+    
+    print("🚀 Starting Flask server...")
+    
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    app_path = os.path.join(script_dir, "app.py")
+    
+    try:
+        # Start Flask server as a subprocess
+        _server_process = subprocess.Popen(
+            [sys.executable, app_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=script_dir,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
+        )
+        
+        # Wait for server to start
+        max_wait = 10  # seconds
+        for i in range(max_wait * 2):
+            if is_port_in_use(5000):
+                print("✅ Flask server started successfully!")
+                return True
+            time.sleep(0.5)
+        
+        print("❌ Failed to start Flask server within timeout")
+        return False
+        
+    except Exception as e:
+        print(f"❌ Error starting Flask server: {e}")
+        return False
+
+
+def stop_flask_server():
+    """Stop the Flask server if we started it"""
+    global _server_process
+    
+    if _server_process is not None:
+        print("\n🛑 Stopping Flask server...")
+        try:
+            if sys.platform == 'win32':
+                _server_process.terminate()
+            else:
+                os.kill(_server_process.pid, signal.SIGTERM)
+            _server_process.wait(timeout=5)
+            print("✅ Flask server stopped")
+        except Exception as e:
+            print(f"⚠️ Could not stop server gracefully: {e}")
+            _server_process.kill()
+        _server_process = None
 
 
 async def demo_login_flow():
@@ -15,6 +93,11 @@ async def demo_login_flow():
     print("PLAYWRIGHT LOGIN DEMO")
     print("=" * 60)
     print()
+    
+    # Ensure Flask server is running
+    if not start_flask_server():
+        print("❌ Cannot proceed without Flask server. Please run 'python app.py' first.")
+        return
     
     async with async_playwright() as p:
         # Launch browser (visible mode for demo)
@@ -105,7 +188,7 @@ async def demo_login_flow():
                 print(f"      - Stat {i+1}: {stat_value}")
             
             # Step 8: Take a screenshot
-            print("\n📸 Step 8: Taking screenshot...")
+            print("\n Step 8: Taking screenshot...")
             await page.screenshot(path="demo_screenshot.png")
             print("   ✓ Screenshot saved as 'demo_screenshot.png'")
             
@@ -139,6 +222,11 @@ async def quick_login_test():
     
     print("Running quick login test (headless)...")
     
+    # Ensure Flask server is running
+    if not start_flask_server():
+        print(" Cannot proceed without Flask server. Please run 'python app.py' first.")
+        return False
+    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -168,9 +256,12 @@ async def quick_login_test():
 
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--quick":
-        asyncio.run(quick_login_test())
-    else:
-        asyncio.run(demo_login_flow())
+    try:
+        if len(sys.argv) > 1 and sys.argv[1] == "--quick":
+            asyncio.run(quick_login_test())
+        else:
+            asyncio.run(demo_login_flow())
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
+    finally:
+        stop_flask_server()

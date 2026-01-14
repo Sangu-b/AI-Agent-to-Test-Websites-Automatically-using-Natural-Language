@@ -5,7 +5,84 @@ Demonstrates automated login testing using Playwright with the Flask test websit
 
 import asyncio
 import sys
+import subprocess
+import time
+import socket
+import os
+import signal
 from playwright.async_api import async_playwright, expect
+
+# Global variable to track server process
+_server_process = None
+
+
+def is_port_in_use(port: int = 5000) -> bool:
+    """Check if a port is already in use"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.connect(('localhost', port))
+            return True
+        except (ConnectionRefusedError, OSError):
+            return False
+
+
+def start_flask_server():
+    """Start the Flask server if not already running"""
+    global _server_process
+    
+    if is_port_in_use(5000):
+        print("✅ Flask server already running on port 5000")
+        return True
+    
+    print("🚀 Starting Flask server...")
+    
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    app_path = os.path.join(script_dir, "app.py")
+    
+    try:
+        # Start Flask server as a subprocess
+        _server_process = subprocess.Popen(
+            [sys.executable, app_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=script_dir,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
+        )
+        
+        # Wait for server to start
+        max_wait = 10  # seconds
+        for i in range(max_wait * 2):
+            if is_port_in_use(5000):
+                print("✅ Flask server started successfully!")
+                return True
+            time.sleep(0.5)
+        
+        print("❌ Failed to start Flask server within timeout")
+        return False
+        
+    except Exception as e:
+        print(f"❌ Error starting Flask server: {e}")
+        return False
+
+
+def stop_flask_server():
+    """Stop the Flask server if we started it"""
+    global _server_process
+    
+    if _server_process is not None:
+        print("\n🛑 Stopping Flask server...")
+        try:
+            if sys.platform == 'win32':
+                _server_process.terminate()
+            else:
+                os.kill(_server_process.pid, signal.SIGTERM)
+            _server_process.wait(timeout=5)
+            print("✅ Flask server stopped")
+        except Exception as e:
+            print(f"⚠️ Could not stop server gracefully: {e}")
+            _server_process.kill()
+        _server_process = None
 
 
 class LoginTestSuite:
@@ -25,7 +102,7 @@ class LoginTestSuite:
         self.browser = await self.playwright.chromium.launch(headless=headless)
         self.context = await self.browser.new_context()
         self.page = await self.context.new_page()
-        print("✅ Browser initialized successfully")
+        print(" Browser initialized successfully")
     
     async def teardown(self):
         """Cleanup browser resources"""
@@ -272,6 +349,11 @@ async def run_all_tests(headless: bool = False):
     print("=" * 60)
     print()
     
+    # Ensure Flask server is running
+    if not start_flask_server():
+        print("❌ Cannot proceed without Flask server. Please run 'python app.py' first.")
+        return False
+    
     test_suite = LoginTestSuite()
     
     try:
@@ -304,6 +386,11 @@ async def run_quick_demo():
     print("=" * 60)
     print()
     
+    # Ensure Flask server is running
+    if not start_flask_server():
+        print("❌ Cannot proceed without Flask server. Please run 'python app.py' first.")
+        return
+    
     async with async_playwright() as p:
         # Launch browser (visible)
         browser = await p.chromium.launch(headless=False)
@@ -335,25 +422,28 @@ async def run_quick_demo():
         await asyncio.sleep(5)
         
         await browser.close()
-        print("\n🎉 Demo completed!")
+        print("\n Demo completed!")
 
 
 if __name__ == "__main__":
-    import os
-    
     # Create screenshots directory
     os.makedirs("screenshots", exist_ok=True)
     
-    # Check for command line arguments
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "--demo":
-            asyncio.run(run_quick_demo())
-        elif sys.argv[1] == "--headless":
-            asyncio.run(run_all_tests(headless=True))
+    try:
+        # Check for command line arguments
+        if len(sys.argv) > 1:
+            if sys.argv[1] == "--demo":
+                asyncio.run(run_quick_demo())
+            elif sys.argv[1] == "--headless":
+                asyncio.run(run_all_tests(headless=True))
+            else:
+                print("Usage: python test_login.py [--demo|--headless]")
+                print("  --demo     Run a quick visual demo")
+                print("  --headless Run all tests in headless mode")
+                print("  (no args)  Run all tests with visible browser")
         else:
-            print("Usage: python test_login.py [--demo|--headless]")
-            print("  --demo     Run a quick visual demo")
-            print("  --headless Run all tests in headless mode")
-            print("  (no args)  Run all tests with visible browser")
-    else:
-        asyncio.run(run_all_tests(headless=False))
+            asyncio.run(run_all_tests(headless=False))
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
+    finally:
+        stop_flask_server()
